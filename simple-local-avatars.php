@@ -31,8 +31,10 @@ class Simple_Local_Avatars {
 		);
 
 		// supplement remote avatars, but not if inside "local only" mode
-		if ( empty( $this->options['only'] ) )
+		if ( empty( $this->options['only'] ) ) {
 			add_filter( 'get_avatar', array( $this, 'get_avatar' ), 10, 5 );
+			add_filter( 'get_avatar_url', array( $this, 'get_avatar_url' ), 10, 5 );
+		}			
 		
 		add_action( 'admin_init', array( $this, 'admin_init' ) );
 
@@ -141,6 +143,81 @@ class Simple_Local_Avatars {
 		$avatar = "<img alt='" . esc_attr( $alt ) . "' src='" . esc_url( $local_avatars[$size] ) . "' class='avatar avatar-{$size}{$author_class} photo' height='{$size}' width='{$size}' />";
 		
 		return apply_filters( 'simple_local_avatar', $avatar );
+	}
+
+	public function get_avatar_url ( $url, $id_or_email, $args = array( 'size' => 96 ) ) {
+		if ( is_numeric( $id_or_email ) )
+			$user_id = (int) $id_or_email;
+		elseif ( is_string( $id_or_email ) && ( $user = get_user_by( 'email', $id_or_email ) ) )
+			$user_id = $user->ID;
+		elseif ( is_object( $id_or_email ) && ! empty( $id_or_email->user_id ) )
+			$user_id = (int) $id_or_email->user_id;
+		
+		if ( empty( $user_id ) )
+			return $url;
+
+		// fetch local avatar from meta and make sure it's properly ste
+		$local_avatars = get_user_meta( $user_id, 'simple_local_avatar', true );
+		if ( empty( $local_avatars['full'] ) )
+			return $url;
+
+		// check rating
+		$avatar_rating = get_user_meta( $user_id, 'simple_local_avatar_rating', true );
+		if ( ! empty( $avatar_rating ) && 'G' != $avatar_rating && ( $site_rating = get_option( 'avatar_rating' ) ) ) {
+			$ratings = array_keys( $this->avatar_ratings );
+			$site_rating_weight = array_search( $site_rating, $ratings );
+			$avatar_rating_weight = array_search( $avatar_rating, $ratings );
+			if ( false !== $avatar_rating_weight && $avatar_rating_weight > $site_rating_weight )
+				return $url;
+		}
+
+		// handle "real" media
+		if ( ! empty( $local_avatars['media_id'] ) ) {
+			// has the media been deleted?
+			if ( ! $avatar_full_path = get_attached_file( $local_avatars['media_id'] ) ) {
+				return $url;
+			}
+		}
+
+		$size = (int) $args['size'];
+						
+		// generate a new size
+		if ( ! array_key_exists( $size, $local_avatars ) ) {
+			$local_avatars[$size] = $local_avatars['full']; // just in case of failure elsewhere
+
+			// allow automatic rescaling to be turned off
+			if ( $allow_dynamic_resizing = apply_filters( 'simple_local_avatars_dynamic_resize', true ) ) :
+
+				$upload_path = wp_upload_dir();
+
+				// get path for image by converting URL, unless its already been set, thanks to using media library approach
+				if ( ! isset( $avatar_full_path ) )
+					$avatar_full_path = str_replace( $upload_path['baseurl'], $upload_path['basedir'], $local_avatars['full'] );
+
+				// generate the new size
+				$editor = wp_get_image_editor( $avatar_full_path );
+				if ( ! is_wp_error( $editor ) ) {
+					$resized = $editor->resize( $size, $size, true );
+					if ( ! is_wp_error( $resized ) ) {
+						$dest_file = $editor->generate_filename();
+						$saved = $editor->save( $dest_file );
+						if ( ! is_wp_error( $saved ) )
+							$local_avatars[$size] = str_replace( $upload_path['basedir'], $upload_path['baseurl'], $dest_file );
+					}
+				}
+
+				// save updated avatar sizes
+				update_user_meta( $user_id, 'simple_local_avatar_url', $local_avatars );
+
+			endif;
+		}
+
+		if ( 'http' != substr( $local_avatars[$size], 0, 4 ) )
+			$local_avatars[$size] = home_url( $local_avatars[$size] );
+		
+		$url = $local_avatars[$size];
+		
+		return apply_filters( 'simple_local_avatar_url', $url );
 	}
 	
 	public function admin_init() {
